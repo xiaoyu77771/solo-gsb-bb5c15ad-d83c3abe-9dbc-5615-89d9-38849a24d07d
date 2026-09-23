@@ -399,6 +399,69 @@ print(json.dumps(json.load(urllib.request.urlopen(req)), ensure_ascii=False, ind
 "
 ```
 
+### `GET /api/v1/audits/{id}/verify` — 校验已存结果
+
+用记录中保存的**原始文本** `raw_text` 重新运行当前的 bidi 解析器，并将重算结果与保存的 `result`
+**逐字段比较**，用于发现旧版解析器产生的历史记录或存储被篡改的情况。接口**只读**：
+只报告差异，不会修复或改写记录。
+
+差异路径为指向解析结果的 [JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901)
+（如 `/controls/0/risk`），**数组差异定位到下标**；差异列表按 JSON Pointer 排序
+（数组下标按数值排序，故 `/controls/2` 排在 `/controls/10` 之前）。
+
+```bash
+curl -s http://localhost:8000/api/v1/audits/1/verify | jq
+```
+
+完全一致时：
+
+```json
+{
+  "id": 1,
+  "consistent": true,
+  "diff_count": 0,
+  "differences": []
+}
+```
+
+存在差异时（示例：保存的 `risk_level` 被改成了 `"low"`）：
+
+```json
+{
+  "id": 1,
+  "consistent": false,
+  "diff_count": 2,
+  "differences": [
+    {
+      "path": "/controls/0/risk",
+      "stored_value": "critical",
+      "recomputed_value": "high",
+      "stored_present": true,
+      "recomputed_present": true
+    },
+    {
+      "path": "/risk_level",
+      "stored_value": "low",
+      "recomputed_value": "high",
+      "stored_present": true,
+      "recomputed_present": true
+    }
+  ]
+}
+```
+
+字段说明：
+
+- `stored_value` / `recomputed_value` — 该路径上保存的值与重算值。
+- `stored_present` / `recomputed_present` — 该字段在对应一侧是否存在，
+  用于**区分字段缺失与值为 `null`**：缺失的一侧 value 为 `null` 且对应 `present` 为 `false`；
+  字段存在但值就是 `null` 时两侧 `present` 均为 `true`。
+- 一侧缺少整个对象键或数组元素时，直接在该路径上报告整条子树
+  （如保存的数组比新解析结果短 1 个元素时报告 `/controls/3`，`stored_present: false`），不逐叶子展开。
+- 标量按 JSON 语义比较（布尔值不等同于数字 `0/1`，数字按数值比较）。
+
+错误情况：记录不存在返回 `404`（`{"detail": "audit record not found"}`）。
+
 ### 其他
 
 - `GET /health` — 健康检查（容器 HEALTHCHECK 使用）
@@ -412,6 +475,7 @@ print(json.dumps(json.load(urllib.request.urlopen(req)), ensure_ascii=False, ind
 │   ├── __init__.py
 │   ├── bidi.py        # UAX#9 控制符解析、配对栈、风险评级、转义预览
 │   ├── compare.py     # 两条已存审计记录的回归比较（按缩写+出现次序配对）
+│   ├── verify.py      # 用已存原文重跑解析并与保存结果逐字段校验（JSON Pointer 差异）
 │   ├── sarif.py       # 已存审计 -> SARIF 2.1.0（rule/result、UTF-16 列、指纹）
 │   ├── database.py    # SQLite schema / CRUD / 查询
 │   ├── schemas.py     # Pydantic 请求模型
@@ -421,6 +485,7 @@ print(json.dumps(json.load(urllib.request.urlopen(req)), ensure_ascii=False, ind
 │   ├── conftest.py    # 共享的临时 DB / TestClient fixture
 │   ├── test_bidi.py   # 解析器单元测试 + API 冒烟测试
 │   ├── test_compare.py # 回归比较接口测试（新增/消失/位移/配对范围/404/422）
+│   ├── test_verify.py  # 已存结果校验接口测试（一致/标量与数组下标差异/null 与缺失区分/排序/只读/404）
 │   └── test_sarif.py  # SARIF 导出测试（level 映射/UTF-16 列/指纹/排序/404）
 ├── Dockerfile
 ├── docker-compose.yml
@@ -440,7 +505,10 @@ python -m pytest tests/ -q
 LRI/PDI 隔离配对、隔离内嵌入隐式关闭、PDF 跳过隔离层（X9）、行列定位、
 嵌套深度、转义预览，以及 API 的创建/详情/过滤/404；比较接口覆盖相同结果、
 新增/消失、仅位置平移、配对范围变化（孤立/配对对象/跨度）、按缩写与出现次序
-配对、标记配对、风险升级与错误数、以及 404 / 422 错误分支；SARIF 导出覆盖
+配对、标记配对、风险升级与错误数、以及 404 / 422 错误分支；已存结果校验覆盖
+一致记录（含 null 字段）、标量与嵌套数组下标差异、字段缺失与值为 null 的区分、
+一侧缺失整段子树、JSON Pointer 排序（下标按数值）、布尔与数字严格区分、
+路径字符转义、以原文重算、接口只读、以及 404；SARIF 导出覆盖
 SARIF 信封与工具元数据、清洁/仅标记零发现、文件名与 `audit-{id}` 回退、
 risk→level 映射（error/warning）、未闭合/平衡/孤立/隐式终止各类 rule/result、
 astral 字符与跨行区段的 UTF-16 列、规则去重排序、结果确定性排序、
