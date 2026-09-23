@@ -12,6 +12,7 @@ from .compare import compare_audits
 from .database import count_audits, get_audit, init_db, insert_audit, query_audits
 from .sarif import build_sarif
 from .schemas import AuditRequest, CompareRequest
+from .verify import verify_audit_record
 
 app = FastAPI(
     title="Unicode Bidi Text Security Audit API",
@@ -92,6 +93,19 @@ def read_audit(audit_id: int) -> dict:
 
 
 @app.get(
+    "/api/v1/audits/{audit_id}/verify",
+    responses={404: {"description": "audit record not found"}},
+)
+def verify_audit(audit_id: int) -> dict:
+    """Re-run the parser on the stored text and diff against the stored
+    result. Read-only: the record is never repaired or rewritten."""
+    record = get_audit(audit_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="audit record not found")
+    return verify_audit_record(record)
+
+
+@app.get(
     "/api/v1/audits/{audit_id}/sarif",
     response_class=JSONResponse,
     responses={
@@ -123,6 +137,7 @@ def root() -> dict:
             "POST /api/v1/audits/compare",
             "GET  /api/v1/audits",
             "GET  /api/v1/audits/{id}",
+            "GET  /api/v1/audits/{id}/verify",
             "GET  /api/v1/audits/{id}/sarif",
             "GET  /health",
         ],

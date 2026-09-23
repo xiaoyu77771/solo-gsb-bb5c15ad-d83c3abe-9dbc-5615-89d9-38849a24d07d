@@ -182,6 +182,56 @@ curl 'http://localhost:8000/api/v1/audits?risk_level=critical&filename=patch&lim
 
 返回摘要、原始文本 `raw_text` 和完整解析结果 `result`。
 
+### `GET /api/v1/audits/{id}/verify` — 重算校验
+
+用记录中保存的 `raw_text` **重新运行 bidi 解析**，与已存储的 `result` 逐字段比较，
+用于检测存储结果是否被篡改、损坏或与当前解析器版本产生漂移。接口**只读**：
+只报告差异，绝不修复或改写记录。
+
+```bash
+curl -s http://localhost:8000/api/v1/audits/1/verify | jq
+```
+
+响应（存储结果被篡改过的示例）：
+
+```json
+{
+  "id": 1,
+  "consistent": false,
+  "diff_count": 2,
+  "diffs": [
+    {
+      "path": "/controls/0/logical_index",
+      "stored": 5,
+      "recomputed": 1,
+      "stored_present": true,
+      "recomputed_present": true
+    },
+    {
+      "path": "/stats/orphan_closers",
+      "stored": null,
+      "recomputed": 0,
+      "stored_present": false,
+      "recomputed_present": true
+    }
+  ]
+}
+```
+
+说明：
+
+- `consistent` 为 `true` 且 `diffs` 为空数组表示重算结果与存储结果完全一致。
+- 每条差异的 `path` 是 [RFC 6901](https://datatracker.ietf.org/doc/html/rfc6901)
+  JSON Pointer，数组元素定位到下标（如 `/controls/0/logical_index`、
+  `/errors/2`）；`diffs` 按 JSON Pointer 字符串排序。
+- `stored` / `recomputed` 分别是保存值与重算值；`stored_present` /
+  `recomputed_present` 标记该侧字段是否存在——字段缺失时对应值为 `null` 且
+  `present` 为 `false`，与「字段存在但值为 `null`」（`present` 为 `true`）区分开。
+- 数组长度不一致时，多出的元素按自身下标逐条报告，缺失一侧
+  `present` 为 `false`。
+
+错误情况：记录不存在返回 `404`（`{"detail": "audit record not found"}`）。
+
 ### `GET /api/v1/audits/{id}/sarif` — 导出 SARIF 2.1.0
 
 把**已存储**的审计转换为 [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/sarif-v2.1.0-os.html) JSON（`Content-Type: application/sarif+json`），可直接导入 GitHub code scanning、Azure DevOps、Mend 等支持 SARIF 的代码扫描平台。
@@ -412,6 +462,7 @@ print(json.dumps(json.load(urllib.request.urlopen(req)), ensure_ascii=False, ind
 │   ├── __init__.py
 │   ├── bidi.py        # UAX#9 控制符解析、配对栈、风险评级、转义预览
 │   ├── compare.py     # 两条已存审计记录的回归比较（按缩写+出现次序配对）
+│   ├── verify.py      # 重算校验：从原文重新解析并与存储结果逐字段 diff
 │   ├── sarif.py       # 已存审计 -> SARIF 2.1.0（rule/result、UTF-16 列、指纹）
 │   ├── database.py    # SQLite schema / CRUD / 查询
 │   ├── schemas.py     # Pydantic 请求模型
@@ -421,6 +472,7 @@ print(json.dumps(json.load(urllib.request.urlopen(req)), ensure_ascii=False, ind
 │   ├── conftest.py    # 共享的临时 DB / TestClient fixture
 │   ├── test_bidi.py   # 解析器单元测试 + API 冒烟测试
 │   ├── test_compare.py # 回归比较接口测试（新增/消失/位移/配对范围/404/422）
+│   ├── test_verify.py  # 重算校验接口测试（一致/篡改/缺失 vs null/只读/404）
 │   └── test_sarif.py  # SARIF 导出测试（level 映射/UTF-16 列/指纹/排序/404）
 ├── Dockerfile
 ├── docker-compose.yml
@@ -440,7 +492,10 @@ python -m pytest tests/ -q
 LRI/PDI 隔离配对、隔离内嵌入隐式关闭、PDF 跳过隔离层（X9）、行列定位、
 嵌套深度、转义预览，以及 API 的创建/详情/过滤/404；比较接口覆盖相同结果、
 新增/消失、仅位置平移、配对范围变化（孤立/配对对象/跨度）、按缩写与出现次序
-配对、标记配对、风险升级与错误数、以及 404 / 422 错误分支；SARIF 导出覆盖
+配对、标记配对、风险升级与错误数、以及 404 / 422 错误分支；重算校验接口覆盖
+一致记录、标量/嵌套字段/数组元素篡改定位、缺失键与 null 的区分、数组长度
+不一致、差异按 JSON Pointer 排序、只读性（校验不改写记录、结果幂等）与 404；
+SARIF 导出覆盖
 SARIF 信封与工具元数据、清洁/仅标记零发现、文件名与 `audit-{id}` 回退、
 risk→level 映射（error/warning）、未闭合/平衡/孤立/隐式终止各类 rule/result、
 astral 字符与跨行区段的 UTF-16 列、规则去重排序、结果确定性排序、
